@@ -4,6 +4,7 @@ import { PaperSize } from '../types';
 
 interface PaperFormData {
   name: string;
+  paperType: string;
   width: number;
   height: number;
   grammage: number;
@@ -13,6 +14,7 @@ interface PaperFormData {
 
 const initialForm: PaperFormData = {
   name: '',
+  paperType: '铜版纸',
   width: 0,
   height: 0,
   grammage: 0,
@@ -21,14 +23,15 @@ const initialForm: PaperFormData = {
 };
 
 const commonSizes = [
-  { name: '大度纸 787×1092', width: 787, height: 1092 },
-  { name: '正度纸 889×1194', width: 889, height: 1194 },
-  { name: '特规纸 720×1020', width: 720, height: 1020 },
-  { name: 'A0 841×1189', width: 841, height: 1189 },
-  { name: 'A1 594×841', width: 594, height: 841 },
+  { name: '大度纸 787×1092', width: 787, height: 1092, paperType: '铜版纸' },
+  { name: '正度纸 889×1194', width: 889, height: 1194, paperType: '双胶纸' },
+  { name: '特规纸 720×1020', width: 720, height: 1020, paperType: '铜版纸' },
+  { name: 'A0 841×1189', width: 841, height: 1189, paperType: '铜版纸' },
+  { name: 'A1 594×841', width: 594, height: 841, paperType: '铜版纸' },
 ];
 
 const commonGrammages = [128, 157, 200, 250, 300, 350];
+const paperTypes = ['铜版纸', '双胶纸', '特种纸', '白板纸', '牛皮纸', '白卡纸', '哑粉纸'];
 
 export default function PaperPage() {
   const { paperSizes, addPaperSize, updatePaperSize, deletePaperSize, loadSampleData } = useApp();
@@ -52,6 +55,7 @@ export default function PaperPage() {
     setEditingPaper(paper);
     setFormData({
       name: paper.name,
+      paperType: paper.paperType || '铜版纸',
       width: paper.width,
       height: paper.height,
       grammage: paper.grammage,
@@ -64,6 +68,7 @@ export default function PaperPage() {
   const handleQuickAdd = (size: typeof commonSizes[0]) => {
     setFormData({
       name: size.name,
+      paperType: size.paperType,
       width: size.width,
       height: size.height,
       grammage: 157,
@@ -135,6 +140,26 @@ export default function PaperPage() {
                   placeholder="如: 大度纸 787×1092"
                   required
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">纸张类型 *</label>
+                <div className="flex flex-wrap gap-2">
+                  {paperTypes.map(type => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, paperType: type })}
+                      className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                        formData.paperType === type
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -268,6 +293,7 @@ export default function PaperPage() {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">规格名称</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">纸张类型</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">尺寸 (mm)</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">克重</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">面积</th>
@@ -283,6 +309,11 @@ export default function PaperPage() {
                   return (
                     <tr key={paper.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3 font-medium text-gray-900">{paper.name}</td>
+                      <td className="px-4 py-3">
+                        <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">
+                          {paper.paperType}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-gray-700">
                         {paper.width} × {paper.height}
                       </td>

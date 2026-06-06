@@ -464,22 +464,247 @@ function findSuitableRemnants(
 ): RemnantStock[] {
   const suitableRemnants: RemnantStock[] = [];
   
+  const orderPaperTypes = [...new Set(orders.map(o => o.paperType))];
+  
   for (const remnant of remnantStock) {
     if (remnant.status !== 'available') continue;
     if (remnant.grammage !== paperSize.grammage) continue;
+    if (remnant.paperType !== paperSize.paperType) continue;
+    if (!orderPaperTypes.includes(remnant.paperType)) continue;
     
-    const paperTypeMatch = paperSize.name.includes(remnant.paperType) || 
-                           remnant.paperType.includes(paperSize.name.split(' ')[0]) ||
-                           paperSize.name.split(' ')[0] === remnant.paperType;
-    if (!paperTypeMatch) continue;
-    
-    const canFitAny = orders.some(order => canFitInRemnant(order, remnant).canFit);
+    const matchingOrders = orders.filter(o => o.paperType === remnant.paperType);
+    const canFitAny = matchingOrders.some(order => canFitInRemnant(order, remnant).canFit);
     if (canFitAny) {
       suitableRemnants.push(remnant);
     }
   }
   
   return suitableRemnants.sort((a, b) => b.area - a.area);
+}
+
+function groupOrdersByPaper(orders: Order[]): Map<string, Order[]> {
+  const groups = new Map<string, Order[]>();
+  
+  for (const order of orders) {
+    const key = `${order.paperType}-${order.finishedWidth + order.bleed * 2 <= order.finishedHeight + order.bleed * 2 ? order.finishedWidth + order.bleed * 2 : order.finishedHeight + order.bleed * 2}`;
+    const actualKey = `${order.paperType}`;
+    if (!groups.has(actualKey)) {
+      groups.set(actualKey, []);
+    }
+    groups.get(actualKey)!.push(order);
+  }
+  
+  return groups;
+}
+
+function findMatchingPaperSizes(
+  orders: Order[],
+  paperSizes: PaperSize[]
+): PaperSize[] {
+  const orderPaperTypes = [...new Set(orders.map(o => o.paperType))];
+  return paperSizes.filter(p => 
+    p.stock > 0 && orderPaperTypes.includes(p.paperType)
+  );
+}
+
+function calculateSchemesForPaperGroup(
+  orders: Order[],
+  paperSize: PaperSize,
+  remnantStock: RemnantStock[],
+  allOrders: Order[]
+): CuttingScheme[] {
+  const schemes: CuttingScheme[] = [];
+  
+  const filteredOrders = orders.filter(o => o.paperType === paperSize.paperType);
+  if (filteredOrders.length === 0) return schemes;
+
+  const suitableRemnants = findSuitableRemnants(filteredOrders, remnantStock, paperSize);
+  
+  const normalLayout = calculateLayout(filteredOrders, paperSize);
+  if (normalLayout.productsPerSheet === 0) return schemes;
+  
+  const totalQuantity = filteredOrders.reduce((sum, o) => sum + o.quantity, 0);
+  const pureNewPaperSheets = Math.ceil(totalQuantity / normalLayout.productsPerSheet);
+  const pureNewPaperCost = pureNewPaperSheets * paperSize.unitPrice;
+
+  let remainingQuantity = totalQuantity;
+  const remnantLayouts: CuttingLayout[] = [];
+  const usedRemnantsInfo: RemnantUsageInfo['usedRemnants'] = [];
+  let totalRemnantProducts = 0;
+  let totalRemnantSheets = 0;
+  let totalCostSaved = 0;
+
+  const orderRemaining = new Map<string, number>();
+  for (const order of filteredOrders) {
+    orderRemaining.set(order.id, order.quantity);
+  }
+
+  for (const remnant of suitableRemnants) {
+    if (remainingQuantity <= 0) break;
+    
+    const remainingOrders = filteredOrders
+      .filter(o => (orderRemaining.get(o.id) || 0) > 0)
+      .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
+    
+    const remnantLayout = calculateLayoutOnRemnant(remainingOrders, remnant);
+    
+    if (remnantLayout.productsPerSheet > 0) {
+      const maxRemnantSheets = Math.min(
+        remnant.quantity,
+        Math.ceil(remainingQuantity / remnantLayout.productsPerSheet)
+      );
+      
+      const productsFromRemnant = Math.min(
+        maxRemnantSheets * remnantLayout.productsPerSheet,
+        remainingQuantity
+      );
+      const actualRemnantSheets = Math.ceil(productsFromRemnant / remnantLayout.productsPerSheet);
+      
+      if (actualRemnantSheets > 0) {
+        const newPaperEquivalent = Math.ceil(productsFromRemnant / normalLayout.productsPerSheet);
+        const costSaved = newPaperEquivalent * paperSize.unitPrice;
+        
+        remnantLayouts.push(remnantLayout);
+        usedRemnantsInfo.push({
+          remnantId: remnant.id,
+          remnantName: `余料 ${remnant.width}×${remnant.height}`,
+          width: remnant.width,
+          height: remnant.height,
+          quantity: actualRemnantSheets,
+          productsCount: productsFromRemnant,
+          utilizedArea: remnantLayout.utilizedArea * actualRemnantSheets,
+          costSaved,
+        });
+        
+        totalRemnantProducts += productsFromRemnant;
+        totalRemnantSheets += actualRemnantSheets;
+        totalCostSaved += costSaved;
+        remainingQuantity -= productsFromRemnant;
+        
+        for (const product of remnantLayout.products) {
+          const currentRemaining = orderRemaining.get(product.orderId) || 0;
+          const perSheetCount = remnantLayout.products.filter(p => p.orderId === product.orderId).length;
+          const toDeduct = Math.min(perSheetCount * actualRemnantSheets, currentRemaining);
+          orderRemaining.set(product.orderId, currentRemaining - toDeduct);
+        }
+      }
+    }
+  }
+
+  const remainingOrders = filteredOrders
+    .filter(o => (orderRemaining.get(o.id) || 0) > 0)
+    .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
+  
+  let newPaperLayout = normalLayout;
+  let newPaperSheets = 0;
+  
+  if (remainingOrders.length > 0 && remainingQuantity > 0) {
+    newPaperLayout = calculateLayout(remainingOrders, paperSize);
+    if (newPaperLayout.productsPerSheet > 0) {
+      newPaperSheets = Math.ceil(remainingQuantity / newPaperLayout.productsPerSheet);
+    }
+  }
+
+  const totalSheets = totalRemnantSheets + newPaperSheets;
+  const optimizedCost = newPaperSheets * paperSize.unitPrice;
+  const costSavings = pureNewPaperCost - optimizedCost;
+
+  const allProducts = [
+    ...remnantLayouts.flatMap(layout => layout.products),
+    ...newPaperLayout.products,
+  ];
+  
+  const totalUtilizedArea = 
+    remnantLayouts.reduce((sum, l) => sum + l.utilizedArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+    newPaperLayout.utilizedArea * newPaperSheets;
+  
+  const totalArea = 
+    remnantLayouts.reduce((sum, l) => sum + l.totalArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+    newPaperLayout.totalArea * newPaperSheets;
+  
+  const totalUtilizationRate = totalArea > 0 ? totalUtilizedArea / totalArea : 0;
+
+  const combinedLayout: CuttingLayout = {
+    ...newPaperLayout,
+    products: allProducts,
+    productsPerSheet: allProducts.filter(p => !p.isFromRemnant).length,
+  };
+
+  const orderAllocations = allOrders.map(order => {
+    const remnantProducts = remnantLayouts.reduce((sum, l) => 
+      sum + l.products.filter(p => p.orderId === order.id).length, 0);
+    const newPaperProducts = newPaperLayout.products.filter(p => p.orderId === order.id).length;
+    const perSheetTotal = remnantProducts + newPaperProducts;
+    
+    const sheetsForOrder = perSheetTotal > 0 
+      ? Math.ceil(order.quantity / perSheetTotal) 
+      : 0;
+    
+    return {
+      orderId: order.id,
+      orderNo: order.orderNo,
+      quantity: order.quantity,
+      sheets: sheetsForOrder,
+    };
+  });
+
+  const totalRemnantArea = 
+    remnantLayouts.reduce((sum, l) => sum + l.remnants.reduce((s, r) => s + r.area, 0) * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+    newPaperLayout.remnants.reduce((sum, r) => sum + r.area, 0) * newPaperSheets;
+  
+  const recyclableArea = paperSize.width * paperSize.height * MIN_RECYCLABLE_AREA_RATIO;
+  const recyclableRemnants = [
+    ...remnantLayouts.flatMap(l => l.remnants.filter(r => r.area >= recyclableArea)),
+    ...newPaperLayout.remnants.filter(r => r.area >= recyclableArea),
+  ];
+
+  const scheme: CuttingScheme = {
+    id: generateId(),
+    name: `${paperSize.name} 方案${suitableRemnants.length > 0 && totalRemnantSheets > 0 ? ' (余料优先)' : ''}`,
+    paperSize,
+    layout: combinedLayout,
+    totalSheets,
+    totalCost: optimizedCost,
+    totalUtilizationRate,
+    wasteRate: 1 - totalUtilizationRate,
+    totalRemnantArea,
+    recyclableRemnants,
+    orderAllocations,
+    createdAt: new Date().toISOString(),
+    isRemnantOptimized: suitableRemnants.length > 0 && totalRemnantSheets > 0,
+    remnantUsageInfo: {
+      usedRemnants: usedRemnantsInfo,
+      totalRemnantSheets,
+      totalRemnantProducts,
+      totalNewPaperSheets: newPaperSheets,
+      totalNewPaperProducts: remainingQuantity > 0 ? remainingQuantity : 0,
+      costSavings,
+      pureNewPaperCost,
+      optimizedCost,
+    },
+    remnantLayouts,
+  };
+
+  schemes.push(scheme);
+
+  if (suitableRemnants.length > 0 && totalRemnantSheets > 0) {
+    const pureScheme: CuttingScheme = {
+      ...scheme,
+      id: generateId(),
+      name: `${paperSize.name} 方案 (纯新纸)`,
+      totalSheets: pureNewPaperSheets,
+      totalCost: pureNewPaperCost,
+      totalUtilizationRate: normalLayout.utilizationRate,
+      wasteRate: 1 - normalLayout.utilizationRate,
+      layout: normalLayout,
+      isRemnantOptimized: false,
+      remnantUsageInfo: undefined,
+      remnantLayouts: undefined,
+    };
+    schemes.push(pureScheme);
+  }
+
+  return schemes;
 }
 
 export function calculateRemnantOptimizedSchemes(
@@ -490,193 +715,21 @@ export function calculateRemnantOptimizedSchemes(
 ): CuttingScheme[] {
   const allSchemes: CuttingScheme[] = [];
 
-  for (const paperSize of paperSizes) {
-    if (paperSize.stock <= 0) continue;
-
-    const suitableRemnants = findSuitableRemnants(orders, remnantStock, paperSize);
+  const orderGroups = groupOrdersByPaper(orders);
+  
+  for (const [paperType, groupOrders] of orderGroups) {
+    const matchingPaperSizes = paperSizes.filter(p => 
+      p.stock > 0 && p.paperType === paperType
+    );
     
-    const normalLayout = calculateLayout(orders, paperSize);
-    if (normalLayout.productsPerSheet === 0) continue;
-    
-    const totalQuantity = orders.reduce((sum, o) => sum + o.quantity, 0);
-    const pureNewPaperSheets = Math.ceil(totalQuantity / normalLayout.productsPerSheet);
-    const pureNewPaperCost = pureNewPaperSheets * paperSize.unitPrice;
-
-    let remainingQuantity = totalQuantity;
-    const remnantLayouts: CuttingLayout[] = [];
-    const usedRemnantsInfo: RemnantUsageInfo['usedRemnants'] = [];
-    let totalRemnantProducts = 0;
-    let totalRemnantSheets = 0;
-    let totalCostSaved = 0;
-
-    const orderRemaining = new Map<string, number>();
-    for (const order of orders) {
-      orderRemaining.set(order.id, order.quantity);
-    }
-
-    for (const remnant of suitableRemnants) {
-      if (remainingQuantity <= 0) break;
-      
-      const remainingOrders = orders
-        .filter(o => (orderRemaining.get(o.id) || 0) > 0)
-        .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
-      
-      const remnantLayout = calculateLayoutOnRemnant(remainingOrders, remnant);
-      
-      if (remnantLayout.productsPerSheet > 0) {
-        const maxRemnantSheets = Math.min(
-          remnant.quantity,
-          Math.ceil(remainingQuantity / remnantLayout.productsPerSheet)
-        );
-        
-        const productsFromRemnant = Math.min(
-          maxRemnantSheets * remnantLayout.productsPerSheet,
-          remainingQuantity
-        );
-        const actualRemnantSheets = Math.ceil(productsFromRemnant / remnantLayout.productsPerSheet);
-        
-        if (actualRemnantSheets > 0) {
-          const newPaperEquivalent = Math.ceil(productsFromRemnant / normalLayout.productsPerSheet);
-          const costSaved = newPaperEquivalent * paperSize.unitPrice;
-          
-          remnantLayouts.push(remnantLayout);
-          usedRemnantsInfo.push({
-            remnantId: remnant.id,
-            remnantName: `余料 ${remnant.width}×${remnant.height}`,
-            width: remnant.width,
-            height: remnant.height,
-            quantity: actualRemnantSheets,
-            productsCount: productsFromRemnant,
-            utilizedArea: remnantLayout.utilizedArea * actualRemnantSheets,
-            costSaved,
-          });
-          
-          totalRemnantProducts += productsFromRemnant;
-          totalRemnantSheets += actualRemnantSheets;
-          totalCostSaved += costSaved;
-          remainingQuantity -= productsFromRemnant;
-          
-          for (const product of remnantLayout.products) {
-            const currentRemaining = orderRemaining.get(product.orderId) || 0;
-            const perSheetCount = remnantLayout.products.filter(p => p.orderId === product.orderId).length;
-            const toDeduct = Math.min(perSheetCount * actualRemnantSheets, currentRemaining);
-            orderRemaining.set(product.orderId, currentRemaining - toDeduct);
-          }
-        }
-      }
-    }
-
-    const remainingOrders = orders
-      .filter(o => (orderRemaining.get(o.id) || 0) > 0)
-      .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
-    
-    let newPaperLayout = normalLayout;
-    let newPaperSheets = 0;
-    
-    if (remainingOrders.length > 0 && remainingQuantity > 0) {
-      newPaperLayout = calculateLayout(remainingOrders, paperSize);
-      if (newPaperLayout.productsPerSheet > 0) {
-        newPaperSheets = Math.ceil(remainingQuantity / newPaperLayout.productsPerSheet);
-      }
-    }
-
-    const totalSheets = totalRemnantSheets + newPaperSheets;
-    const optimizedCost = newPaperSheets * paperSize.unitPrice;
-    const costSavings = pureNewPaperCost - optimizedCost;
-
-    const allProducts = [
-      ...remnantLayouts.flatMap(layout => layout.products),
-      ...newPaperLayout.products,
-    ];
-    
-    const totalUtilizedArea = 
-      remnantLayouts.reduce((sum, l) => sum + l.utilizedArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
-      newPaperLayout.utilizedArea * newPaperSheets;
-    
-    const totalArea = 
-      remnantLayouts.reduce((sum, l) => sum + l.totalArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
-      newPaperLayout.totalArea * newPaperSheets;
-    
-    const totalUtilizationRate = totalArea > 0 ? totalUtilizedArea / totalArea : 0;
-
-    const combinedLayout: CuttingLayout = {
-      ...newPaperLayout,
-      products: allProducts,
-      productsPerSheet: allProducts.filter(p => !p.isFromRemnant).length,
-    };
-
-    const orderAllocations = orders.map(order => {
-      const remnantProducts = remnantLayouts.reduce((sum, l) => 
-        sum + l.products.filter(p => p.orderId === order.id).length, 0);
-      const newPaperProducts = newPaperLayout.products.filter(p => p.orderId === order.id).length;
-      const perSheetTotal = remnantProducts + newPaperProducts;
-      
-      const sheetsForOrder = perSheetTotal > 0 
-        ? Math.ceil(order.quantity / perSheetTotal) 
-        : 0;
-      
-      return {
-        orderId: order.id,
-        orderNo: order.orderNo,
-        quantity: order.quantity,
-        sheets: sheetsForOrder,
-      };
-    });
-
-    const totalRemnantArea = 
-      remnantLayouts.reduce((sum, l) => sum + l.remnants.reduce((s, r) => s + r.area, 0) * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
-      newPaperLayout.remnants.reduce((sum, r) => sum + r.area, 0) * newPaperSheets;
-    
-    const recyclableArea = paperSize.width * paperSize.height * MIN_RECYCLABLE_AREA_RATIO;
-    const recyclableRemnants = [
-      ...remnantLayouts.flatMap(l => l.remnants.filter(r => r.area >= recyclableArea)),
-      ...newPaperLayout.remnants.filter(r => r.area >= recyclableArea),
-    ];
-
-    const scheme: CuttingScheme = {
-      id: generateId(),
-      name: `${paperSize.name} 方案${suitableRemnants.length > 0 ? ' (余料优先)' : ''}`,
-      paperSize,
-      layout: combinedLayout,
-      totalSheets,
-      totalCost: optimizedCost,
-      totalUtilizationRate,
-      wasteRate: 1 - totalUtilizationRate,
-      totalRemnantArea,
-      recyclableRemnants,
-      orderAllocations,
-      createdAt: new Date().toISOString(),
-      isRemnantOptimized: suitableRemnants.length > 0 && totalRemnantSheets > 0,
-      remnantUsageInfo: {
-        usedRemnants: usedRemnantsInfo,
-        totalRemnantSheets,
-        totalRemnantProducts,
-        totalNewPaperSheets: newPaperSheets,
-        totalNewPaperProducts: remainingQuantity > 0 ? remainingQuantity : 0,
-        costSavings,
-        pureNewPaperCost,
-        optimizedCost,
-      },
-      remnantLayouts,
-    };
-
-    allSchemes.push(scheme);
-
-    if (suitableRemnants.length > 0 && totalRemnantSheets > 0) {
-      const pureScheme: CuttingScheme = {
-        ...scheme,
-        id: generateId(),
-        name: `${paperSize.name} 方案 (纯新纸)`,
-        totalSheets: pureNewPaperSheets,
-        totalCost: pureNewPaperCost,
-        totalUtilizationRate: normalLayout.utilizationRate,
-        wasteRate: 1 - normalLayout.utilizationRate,
-        layout: normalLayout,
-        isRemnantOptimized: false,
-        remnantUsageInfo: undefined,
-        remnantLayouts: undefined,
-      };
-      allSchemes.push(pureScheme);
+    for (const paperSize of matchingPaperSizes) {
+      const schemes = calculateSchemesForPaperGroup(
+        groupOrders,
+        paperSize,
+        remnantStock,
+        orders
+      );
+      allSchemes.push(...schemes);
     }
   }
 

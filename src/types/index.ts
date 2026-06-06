@@ -1,6 +1,7 @@
 export interface PaperSize {
   id: string;
   name: string;
+  paperType: string;
   width: number;
   height: number;
   grammage: number;

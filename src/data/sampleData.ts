@@ -76,6 +76,7 @@ export const samplePaperSizes: PaperSize[] = [
   {
     id: generateId(),
     name: '大度纸 787×1092',
+    paperType: '铜版纸',
     width: 787,
     height: 1092,
     grammage: 157,
@@ -86,6 +87,7 @@ export const samplePaperSizes: PaperSize[] = [
   {
     id: generateId(),
     name: '正度纸 889×1194',
+    paperType: '双胶纸',
     width: 889,
     height: 1194,
     grammage: 200,
@@ -96,6 +98,7 @@ export const samplePaperSizes: PaperSize[] = [
   {
     id: generateId(),
     name: '特规纸 720×1020',
+    paperType: '铜版纸',
     width: 720,
     height: 1020,
     grammage: 128,
@@ -106,6 +109,7 @@ export const samplePaperSizes: PaperSize[] = [
   {
     id: generateId(),
     name: '大度纸 787×1092 (250g)',
+    paperType: '铜版纸',
     width: 787,
     height: 1092,
     grammage: 250,
@@ -116,6 +120,7 @@ export const samplePaperSizes: PaperSize[] = [
   {
     id: generateId(),
     name: '正度纸 889×1194 (157g)',
+    paperType: '铜版纸',
     width: 889,
     height: 1194,
     grammage: 157,
