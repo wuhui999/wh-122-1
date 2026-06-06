@@ -13,10 +13,12 @@ export default function SchemesPage() {
     calculateSchemes,
     setSelectedScheme,
     registerRemnantsFromScheme,
+    confirmScheme,
   } = useApp();
 
   const [isCalculating, setIsCalculating] = useState(false);
   const [remnantRegistered, setRemnantRegistered] = useState<string | null>(null);
+  const [confirmingScheme, setConfirmingScheme] = useState<string | null>(null);
 
   const handleCalculate = () => {
     setIsCalculating(true);
@@ -34,6 +36,26 @@ export default function SchemesPage() {
     registerRemnantsFromScheme(scheme);
     setRemnantRegistered(scheme.id);
     setTimeout(() => setRemnantRegistered(null), 3000);
+  };
+
+  const handleConfirmScheme = (scheme: CuttingScheme) => {
+    if (scheme.confirmed) {
+      alert('该方案已经确认过了');
+      return;
+    }
+    
+    const confirmMessage = scheme.isRemnantOptimized && scheme.remnantUsageInfo
+      ? `确认采用此方案？\n\n• 使用余料：${scheme.remnantUsageInfo.totalRemnantSheets}张\n• 使用新纸：${scheme.remnantUsageInfo.totalNewPaperSheets}张\n• 节约成本：¥${scheme.remnantUsageInfo.costSavings.toFixed(2)}\n\n确认后将：\n- 标记所用余料为已使用\n- 扣减对应大张纸库存\n- 更新订单状态为已排产`
+      : `确认采用此方案？\n\n• 使用新纸：${scheme.totalSheets}张\n• 总成本：¥${scheme.totalCost.toFixed(2)}\n\n确认后将：\n- 扣减对应大张纸库存\n- 更新订单状态为已排产`;
+    
+    if (window.confirm(confirmMessage)) {
+      setConfirmingScheme(scheme.id);
+      setTimeout(() => {
+        confirmScheme(scheme);
+        setConfirmingScheme(null);
+        alert('✅ 方案已确认采用！\n\n相关数据已更新。');
+      }, 500);
+    }
   };
 
   const getUtilizationColor = (rate: number) => {
@@ -117,9 +139,15 @@ export default function SchemesPage() {
                 <div className="p-4">
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-2 flex-wrap gap-1">
                         {index === 0 && (
                           <span className="px-2 py-0.5 bg-yellow-400 text-yellow-900 text-xs font-bold rounded">推荐</span>
+                        )}
+                        {scheme.isRemnantOptimized && (
+                          <span className="px-2 py-0.5 bg-emerald-500 text-white text-xs font-bold rounded">♻️ 余料优先</span>
+                        )}
+                        {scheme.confirmed && (
+                          <span className="px-2 py-0.5 bg-blue-500 text-white text-xs font-bold rounded">✅ 已确认</span>
                         )}
                         <h3 className="text-lg font-bold text-gray-800">{scheme.name}</h3>
                       </div>
@@ -132,6 +160,35 @@ export default function SchemesPage() {
                       <div className="text-xs text-gray-500">利用率</div>
                     </div>
                   </div>
+
+                  {scheme.isRemnantOptimized && scheme.remnantUsageInfo && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-emerald-700">♻️ 余料优化方案</span>
+                        <span className="text-sm font-bold text-emerald-600">
+                          节约 ¥{scheme.remnantUsageInfo.costSavings.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="bg-white rounded p-2">
+                          <div className="text-gray-500">使用余料</div>
+                          <div className="font-medium text-emerald-700">
+                            {scheme.remnantUsageInfo.totalRemnantSheets}张 / {scheme.remnantUsageInfo.totalRemnantProducts}个成品
+                          </div>
+                        </div>
+                        <div className="bg-white rounded p-2">
+                          <div className="text-gray-500">使用新纸</div>
+                          <div className="font-medium text-blue-700">
+                            {scheme.remnantUsageInfo.totalNewPaperSheets}张 / {scheme.remnantUsageInfo.totalNewPaperProducts}个成品
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-emerald-200 text-xs text-emerald-600">
+                        纯新纸成本: ¥{scheme.remnantUsageInfo.pureNewPaperCost.toFixed(2)} → 
+                        优化后成本: ¥{scheme.remnantUsageInfo.optimizedCost.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
                     <div
@@ -165,6 +222,24 @@ export default function SchemesPage() {
 
                   {selectedScheme?.id === scheme.id && (
                     <div className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                      {scheme.isRemnantOptimized && scheme.remnantUsageInfo && scheme.remnantUsageInfo.usedRemnants.length > 0 && (
+                        <div>
+                          <h4 className="font-medium text-gray-700 mb-2">♻️ 余料使用详情</h4>
+                          <div className="space-y-2">
+                            {scheme.remnantUsageInfo.usedRemnants.map((remnant, idx) => (
+                              <div key={remnant.remnantId} className="flex justify-between text-sm bg-emerald-50 rounded px-3 py-2">
+                                <span className="text-emerald-700">
+                                  {idx + 1}. 余料 {remnant.width}×{remnant.height}mm
+                                </span>
+                                <span className="text-emerald-600">
+                                  {remnant.quantity}张 → {remnant.productsCount}个成品
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <h4 className="font-medium text-gray-700">订单分配详情</h4>
                       <div className="space-y-2">
                         {scheme.orderAllocations.map(alloc => {
@@ -177,6 +252,20 @@ export default function SchemesPage() {
                           );
                         })}
                       </div>
+
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleConfirmScheme(scheme); }}
+                        disabled={scheme.confirmed || confirmingScheme === scheme.id}
+                        className={`w-full px-4 py-3 rounded-lg font-bold text-white transition-colors ${
+                          scheme.confirmed 
+                            ? 'bg-gray-400 cursor-not-allowed' 
+                            : confirmingScheme === scheme.id
+                            ? 'bg-blue-400 cursor-wait'
+                            : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                      >
+                        {scheme.confirmed ? '✅ 方案已确认' : confirmingScheme === scheme.id ? '⏳ 确认中...' : '✓ 确认采用此方案'}
+                      </button>
 
                       <div className="flex space-x-2 pt-2">
                         <Link
@@ -223,34 +312,47 @@ export default function SchemesPage() {
                   <tr>
                     <th className="px-3 py-2 text-left">排名</th>
                     <th className="px-3 py-2 text-left">方案名称</th>
-                    <th className="px-3 py-2 text-left">纸张规格</th>
+                    <th className="px-3 py-2 text-left">类型</th>
                     <th className="px-3 py-2 text-right">每张数量</th>
                     <th className="px-3 py-2 text-right">总张数</th>
+                    <th className="px-3 py-2 text-right">余料用量</th>
                     <th className="px-3 py-2 text-right">总成本</th>
+                    <th className="px-3 py-2 text-right">节约成本</th>
                     <th className="px-3 py-2 text-right">利用率</th>
                     <th className="px-3 py-2 text-right">损耗率</th>
-                    <th className="px-3 py-2 text-right">余料面积</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {schemes.map((scheme, index) => (
-                    <tr key={scheme.id} className="hover:bg-gray-50">
+                    <tr key={scheme.id} className={`hover:bg-gray-50 ${scheme.confirmed ? 'bg-blue-50' : ''}`}>
                       <td className="px-3 py-2">
                         {index === 0 && <span className="text-yellow-500">🥇</span>}
                         {index === 1 && <span className="text-gray-400">🥈</span>}
                         {index === 2 && <span className="text-orange-400">🥉</span>}
                         {index > 2 && <span className="text-gray-500">{index + 1}</span>}
+                        {scheme.confirmed && <span className="ml-1 text-blue-500">✓</span>}
                       </td>
                       <td className="px-3 py-2 font-medium">{scheme.name}</td>
-                      <td className="px-3 py-2 text-gray-600">{scheme.paperSize.name}</td>
+                      <td className="px-3 py-2">
+                        {scheme.isRemnantOptimized ? (
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs rounded">余料优先</span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded">纯新纸</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right">{scheme.layout.productsPerSheet}</td>
                       <td className="px-3 py-2 text-right">{scheme.totalSheets}</td>
+                      <td className="px-3 py-2 text-right">
+                        {scheme.remnantUsageInfo?.totalRemnantSheets || 0}张
+                      </td>
                       <td className="px-3 py-2 text-right font-medium text-green-600">¥{scheme.totalCost.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right font-medium text-emerald-600">
+                        {scheme.remnantUsageInfo?.costSavings ? `¥${scheme.remnantUsageInfo.costSavings.toFixed(2)}` : '-'}
+                      </td>
                       <td className={`px-3 py-2 text-right font-medium ${getUtilizationColor(scheme.totalUtilizationRate)}`}>
                         {(scheme.totalUtilizationRate * 100).toFixed(1)}%
                       </td>
                       <td className="px-3 py-2 text-right text-red-500">{(scheme.wasteRate * 100).toFixed(1)}%</td>
-                      <td className="px-3 py-2 text-right text-gray-600">{(scheme.totalRemnantArea / 1000000).toFixed(4)} m²</td>
                     </tr>
                   ))}
                 </tbody>
@@ -271,12 +373,13 @@ export default function SchemesPage() {
       <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
         <h4 className="font-medium text-yellow-800 mb-2">📌 开料方案说明</h4>
         <ul className="text-sm text-yellow-700 space-y-1">
-          <li>• 系统采用启发式算法计算多种可能的排版方案，按综合评分排序</li>
-          <li>• 综合评分 = 利用率 × 60% + 成本因素 × 40%</li>
-          <li>• 利用率 = 成品总面积 / 纸张总面积，越高越好</li>
-          <li>• 损耗率 = 1 - 利用率，包括余料和无法利用的边角料</li>
-          <li>• 大于纸张面积10%的余料可以登记入库，供后续订单使用</li>
-          <li>• 点击方案卡片可展开查看详情、预览排版效果和导出报告</li>
+          <li>• <span className="font-medium">余料优先：</span>系统优先使用可用余料排产，不足部分再用新纸开料，最大程度节约成本</li>
+          <li>• <span className="font-medium">余料匹配：</span>自动筛选尺寸能容纳成品（含出血、可旋转）、纸张类型和克重匹配的可用余料</li>
+          <li>• <span className="font-medium">成本节约：</span>自动计算余料优化方案相比纯新纸方案节约的用纸成本</li>
+          <li>• <span className="font-medium">综合评分：</span>按成本优先排序，成本相同则按利用率 × 60% + 成本因素 × 40% 评分</li>
+          <li>• <span className="font-medium">利用率：</span>成品总面积 / 纸张总面积，越高越好</li>
+          <li>• <span className="font-medium">确认采用：</span>确认后自动标记余料为已使用、扣减大张纸库存、更新订单状态为已排产</li>
+          <li>• <span className="font-medium">操作：</span>点击方案卡片可展开查看详情、预览排版效果、登记余料和导出报告</li>
         </ul>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { Order, PaperSize, CuttingScheme, RemnantStock } from '../types';
 import { sampleOrders, samplePaperSizes, sampleRemnantStock } from '../data/sampleData';
-import { calculateMultipleLayouts } from '../utils/algorithm';
+import { calculateMultipleLayouts, calculateRemnantOptimizedSchemes } from '../utils/algorithm';
 
 interface AppContextType {
   orders: Order[];
@@ -24,6 +24,7 @@ interface AppContextType {
   
   calculateSchemes: () => void;
   setSelectedScheme: (scheme: CuttingScheme | null) => void;
+  confirmScheme: (scheme: CuttingScheme) => void;
   
   addRemnantStock: (remnant: Omit<RemnantStock, 'id' | 'createdAt' | 'status'>) => void;
   updateRemnantStock: (id: string, updates: Partial<RemnantStock>) => void;
@@ -129,10 +130,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSchemes([]);
       return;
     }
-    const calculated = calculateMultipleLayouts(selectedOrdersList, paperSizes, 3);
+    const availableRemnants = remnantStock.filter(r => r.status === 'available');
+    const calculated = calculateRemnantOptimizedSchemes(
+      selectedOrdersList, 
+      paperSizes, 
+      availableRemnants, 
+      3
+    );
     setSchemes(calculated);
     setSelectedScheme(calculated[0] || null);
-  }, [orders, paperSizes, selectedOrders]);
+  }, [orders, paperSizes, selectedOrders, remnantStock]);
 
   const addRemnantStock = useCallback((remnant: Omit<RemnantStock, 'id' | 'createdAt' | 'status'>) => {
     setRemnantStock(prev => [...prev, {
@@ -170,6 +177,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRemnantStock(prev => [...prev, ...newRemnants]);
   }, []);
 
+  const confirmScheme = useCallback((scheme: CuttingScheme) => {
+    if (scheme.remnantUsageInfo) {
+      for (const usedRemnant of scheme.remnantUsageInfo.usedRemnants) {
+        setRemnantStock(prev => prev.map(r => {
+          if (r.id === usedRemnant.remnantId) {
+            const newQuantity = r.quantity - usedRemnant.quantity;
+            return {
+              ...r,
+              quantity: newQuantity,
+              status: newQuantity <= 0 ? 'used' : r.status,
+              usedAt: newQuantity <= 0 ? new Date().toISOString() : r.usedAt,
+            };
+          }
+          return r;
+        }));
+      }
+    }
+
+    const newPaperUsed = scheme.remnantUsageInfo?.totalNewPaperSheets || scheme.totalSheets;
+    if (newPaperUsed > 0) {
+      setPaperSizes(prev => prev.map(p => {
+        if (p.id === scheme.paperSize.id) {
+          return {
+            ...p,
+            stock: Math.max(0, p.stock - newPaperUsed),
+          };
+        }
+        return p;
+      }));
+    }
+
+    const orderIds = scheme.orderAllocations.map(a => a.orderId);
+    setOrders(prev => prev.map(o => {
+      if (orderIds.includes(o.id)) {
+        return {
+          ...o,
+          status: 'scheduled' as const,
+        };
+      }
+      return o;
+    }));
+
+    setSchemes(prev => prev.map(s => {
+      if (s.id === scheme.id) {
+        return {
+          ...s,
+          confirmed: true,
+          confirmedAt: new Date().toISOString(),
+        };
+      }
+      return s;
+    }));
+
+    if (selectedScheme?.id === scheme.id) {
+      setSelectedScheme(prev => prev ? {
+        ...prev,
+        confirmed: true,
+        confirmedAt: new Date().toISOString(),
+      } : null);
+    }
+  }, [selectedScheme]);
+
   const loadSampleData = useCallback(() => {
     setOrders(sampleOrders);
     setPaperSizes(samplePaperSizes);
@@ -206,6 +275,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deletePaperSize,
       calculateSchemes,
       setSelectedScheme,
+      confirmScheme,
       addRemnantStock,
       updateRemnantStock,
       deleteRemnantStock,

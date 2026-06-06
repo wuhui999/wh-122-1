@@ -31,6 +31,8 @@ export interface PositionedProduct {
   orderId: string;
   orderNo: string;
   productName: string;
+  isFromRemnant: boolean;
+  remnantId?: string;
 }
 
 export interface RemnantPiece {
@@ -40,6 +42,19 @@ export interface RemnantPiece {
   width: number;
   height: number;
   area: number;
+}
+
+export interface RemnantUsage {
+  remnantId: string;
+  remnantName: string;
+  width: number;
+  height: number;
+  products: PositionedProduct[];
+  productsCount: number;
+  utilizedArea: number;
+  totalArea: number;
+  utilizationRate: number;
+  usedQuantity: number;
 }
 
 export interface CuttingLayout {
@@ -53,6 +68,41 @@ export interface CuttingLayout {
   utilizedArea: number;
   totalArea: number;
   utilizationRate: number;
+  isFromRemnant: boolean;
+  remnantId?: string;
+  sourceRemnant?: {
+    id: string;
+    width: number;
+    height: number;
+  };
+}
+
+export interface RemnantOptimizedLayout {
+  remnantUsage: RemnantUsage[];
+  remnantProductsTotal: number;
+  newPaperLayout: CuttingLayout;
+  totalProducts: number;
+  totalUtilizationRate: number;
+}
+
+export interface RemnantUsageInfo {
+  usedRemnants: {
+    remnantId: string;
+    remnantName: string;
+    width: number;
+    height: number;
+    quantity: number;
+    productsCount: number;
+    utilizedArea: number;
+    costSaved: number;
+  }[];
+  totalRemnantSheets: number;
+  totalRemnantProducts: number;
+  totalNewPaperSheets: number;
+  totalNewPaperProducts: number;
+  costSavings: number;
+  pureNewPaperCost: number;
+  optimizedCost: number;
 }
 
 export interface CuttingScheme {
@@ -73,6 +123,11 @@ export interface CuttingScheme {
     sheets: number;
   }[];
   createdAt: string;
+  isRemnantOptimized: boolean;
+  remnantUsageInfo?: RemnantUsageInfo;
+  remnantLayouts?: CuttingLayout[];
+  confirmed?: boolean;
+  confirmedAt?: string;
 }
 
 export interface RemnantStock {

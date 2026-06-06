@@ -1,4 +1,4 @@
-import { Order, PaperSize, CuttingLayout, PositionedProduct, RemnantPiece, CuttingScheme } from '../types';
+import { Order, PaperSize, CuttingLayout, PositionedProduct, RemnantPiece, CuttingScheme, RemnantStock, RemnantUsageInfo, RemnantUsage } from '../types';
 
 const BLEED_DEFAULT = 3;
 const MIN_REMNANT_WIDTH = 100;
@@ -146,6 +146,7 @@ export function calculateLayout(
           orderId: order.id,
           orderNo: order.orderNo,
           productName: order.productName,
+          isFromRemnant: false,
         });
 
         spaces.splice(bestFit.index, 1);
@@ -188,6 +189,7 @@ export function calculateLayout(
     utilizedArea,
     totalArea,
     utilizationRate,
+    isFromRemnant: false,
   };
 }
 
@@ -244,6 +246,7 @@ export function calculateSchemes(
       recyclableRemnants,
       orderAllocations,
       createdAt: new Date().toISOString(),
+      isRemnantOptimized: false,
     });
   }
 
@@ -328,6 +331,7 @@ export function calculateMultipleLayouts(
         recyclableRemnants,
         orderAllocations,
         createdAt: new Date().toISOString(),
+        isRemnantOptimized: false,
       });
     }
   }
@@ -337,6 +341,355 @@ export function calculateMultipleLayouts(
     const scoreB = b.totalUtilizationRate * 0.6 + (1 / Math.max(b.totalCost, 1)) * 0.4;
     return scoreB - scoreA;
   }).slice(0, variations * paperSizes.length);
+}
+
+function canFitInRemnant(
+  order: Order,
+  remnant: RemnantStock
+): { canFit: boolean; rotated: boolean; itemWidth: number; itemHeight: number } {
+  const itemWidth = order.finishedWidth + (order.bleed || BLEED_DEFAULT) * 2;
+  const itemHeight = order.finishedHeight + (order.bleed || BLEED_DEFAULT) * 2;
+
+  if (itemWidth <= remnant.width && itemHeight <= remnant.height) {
+    return { canFit: true, rotated: false, itemWidth, itemHeight };
+  }
+  if (itemHeight <= remnant.width && itemWidth <= remnant.height) {
+    return { canFit: true, rotated: true, itemWidth, itemHeight };
+  }
+  return { canFit: false, rotated: false, itemWidth, itemHeight };
+}
+
+function calculateLayoutOnRemnant(
+  orders: Order[],
+  remnant: RemnantStock,
+  maxProductsPerSheet: number = 100
+): CuttingLayout {
+  const sortedOrders = sortOrdersByArea(orders);
+  const positionedProducts: PositionedProduct[] = [];
+  const spaces: PackingSpace[] = [
+    { x: 0, y: 0, width: remnant.width, height: remnant.height }
+  ];
+
+  const orderRemaining = new Map<string, number>();
+  let totalProducts = 0;
+
+  for (const order of sortedOrders) {
+    orderRemaining.set(order.id, order.quantity);
+  }
+
+  let continuePacking = true;
+  while (continuePacking && totalProducts < maxProductsPerSheet) {
+    let placed = false;
+
+    for (const order of sortedOrders) {
+      const remaining = orderRemaining.get(order.id) || 0;
+      if (remaining <= 0) continue;
+
+      const itemWidth = order.finishedWidth + (order.bleed || BLEED_DEFAULT) * 2;
+      const itemHeight = order.finishedHeight + (order.bleed || BLEED_DEFAULT) * 2;
+
+      const bestFit = findBestFit(spaces, itemWidth, itemHeight);
+      
+      if (bestFit) {
+        const space = spaces[bestFit.index];
+        const placedWidth = bestFit.rotated ? itemHeight : itemWidth;
+        const placedHeight = bestFit.rotated ? itemWidth : itemHeight;
+
+        positionedProducts.push({
+          x: space.x,
+          y: space.y,
+          width: placedWidth,
+          height: placedHeight,
+          orderId: order.id,
+          orderNo: order.orderNo,
+          productName: order.productName,
+          isFromRemnant: true,
+          remnantId: remnant.id,
+        });
+
+        spaces.splice(bestFit.index, 1);
+        const newSpaces = splitSpace(space, placedWidth, placedHeight);
+        spaces.push(...newSpaces);
+
+        orderRemaining.set(order.id, remaining - 1);
+        totalProducts++;
+        placed = true;
+        break;
+      }
+    }
+
+    if (!placed) {
+      continuePacking = false;
+    }
+  }
+
+  const totalArea = remnant.width * remnant.height;
+  const utilizedArea = positionedProducts.reduce(
+    (sum, p) => sum + p.width * p.height,
+    0
+  );
+  const utilizationRate = totalArea > 0 ? utilizedArea / totalArea : 0;
+
+  const remnants = splitRemainingSpaces(
+    spaces,
+    MIN_REMNANT_WIDTH,
+    MIN_REMNANT_HEIGHT
+  );
+
+  return {
+    sheetId: remnant.id,
+    sheetName: `余料 ${remnant.width}×${remnant.height}`,
+    sheetWidth: remnant.width,
+    sheetHeight: remnant.height,
+    products: positionedProducts,
+    remnants,
+    productsPerSheet: positionedProducts.length,
+    utilizedArea,
+    totalArea,
+    utilizationRate,
+    isFromRemnant: true,
+    remnantId: remnant.id,
+    sourceRemnant: {
+      id: remnant.id,
+      width: remnant.width,
+      height: remnant.height,
+    },
+  };
+}
+
+function findSuitableRemnants(
+  orders: Order[],
+  remnantStock: RemnantStock[],
+  paperSize: PaperSize
+): RemnantStock[] {
+  const suitableRemnants: RemnantStock[] = [];
+  
+  for (const remnant of remnantStock) {
+    if (remnant.status !== 'available') continue;
+    if (remnant.grammage !== paperSize.grammage) continue;
+    
+    const paperTypeMatch = paperSize.name.includes(remnant.paperType) || 
+                           remnant.paperType.includes(paperSize.name.split(' ')[0]) ||
+                           paperSize.name.split(' ')[0] === remnant.paperType;
+    if (!paperTypeMatch) continue;
+    
+    const canFitAny = orders.some(order => canFitInRemnant(order, remnant).canFit);
+    if (canFitAny) {
+      suitableRemnants.push(remnant);
+    }
+  }
+  
+  return suitableRemnants.sort((a, b) => b.area - a.area);
+}
+
+export function calculateRemnantOptimizedSchemes(
+  orders: Order[],
+  paperSizes: PaperSize[],
+  remnantStock: RemnantStock[],
+  variations: number = 3
+): CuttingScheme[] {
+  const allSchemes: CuttingScheme[] = [];
+
+  for (const paperSize of paperSizes) {
+    if (paperSize.stock <= 0) continue;
+
+    const suitableRemnants = findSuitableRemnants(orders, remnantStock, paperSize);
+    
+    const normalLayout = calculateLayout(orders, paperSize);
+    if (normalLayout.productsPerSheet === 0) continue;
+    
+    const totalQuantity = orders.reduce((sum, o) => sum + o.quantity, 0);
+    const pureNewPaperSheets = Math.ceil(totalQuantity / normalLayout.productsPerSheet);
+    const pureNewPaperCost = pureNewPaperSheets * paperSize.unitPrice;
+
+    let remainingQuantity = totalQuantity;
+    const remnantLayouts: CuttingLayout[] = [];
+    const usedRemnantsInfo: RemnantUsageInfo['usedRemnants'] = [];
+    let totalRemnantProducts = 0;
+    let totalRemnantSheets = 0;
+    let totalCostSaved = 0;
+
+    const orderRemaining = new Map<string, number>();
+    for (const order of orders) {
+      orderRemaining.set(order.id, order.quantity);
+    }
+
+    for (const remnant of suitableRemnants) {
+      if (remainingQuantity <= 0) break;
+      
+      const remainingOrders = orders
+        .filter(o => (orderRemaining.get(o.id) || 0) > 0)
+        .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
+      
+      const remnantLayout = calculateLayoutOnRemnant(remainingOrders, remnant);
+      
+      if (remnantLayout.productsPerSheet > 0) {
+        const maxRemnantSheets = Math.min(
+          remnant.quantity,
+          Math.ceil(remainingQuantity / remnantLayout.productsPerSheet)
+        );
+        
+        const productsFromRemnant = Math.min(
+          maxRemnantSheets * remnantLayout.productsPerSheet,
+          remainingQuantity
+        );
+        const actualRemnantSheets = Math.ceil(productsFromRemnant / remnantLayout.productsPerSheet);
+        
+        if (actualRemnantSheets > 0) {
+          const newPaperEquivalent = Math.ceil(productsFromRemnant / normalLayout.productsPerSheet);
+          const costSaved = newPaperEquivalent * paperSize.unitPrice;
+          
+          remnantLayouts.push(remnantLayout);
+          usedRemnantsInfo.push({
+            remnantId: remnant.id,
+            remnantName: `余料 ${remnant.width}×${remnant.height}`,
+            width: remnant.width,
+            height: remnant.height,
+            quantity: actualRemnantSheets,
+            productsCount: productsFromRemnant,
+            utilizedArea: remnantLayout.utilizedArea * actualRemnantSheets,
+            costSaved,
+          });
+          
+          totalRemnantProducts += productsFromRemnant;
+          totalRemnantSheets += actualRemnantSheets;
+          totalCostSaved += costSaved;
+          remainingQuantity -= productsFromRemnant;
+          
+          for (const product of remnantLayout.products) {
+            const currentRemaining = orderRemaining.get(product.orderId) || 0;
+            const perSheetCount = remnantLayout.products.filter(p => p.orderId === product.orderId).length;
+            const toDeduct = Math.min(perSheetCount * actualRemnantSheets, currentRemaining);
+            orderRemaining.set(product.orderId, currentRemaining - toDeduct);
+          }
+        }
+      }
+    }
+
+    const remainingOrders = orders
+      .filter(o => (orderRemaining.get(o.id) || 0) > 0)
+      .map(o => ({ ...o, quantity: orderRemaining.get(o.id) || 0 }));
+    
+    let newPaperLayout = normalLayout;
+    let newPaperSheets = 0;
+    
+    if (remainingOrders.length > 0 && remainingQuantity > 0) {
+      newPaperLayout = calculateLayout(remainingOrders, paperSize);
+      if (newPaperLayout.productsPerSheet > 0) {
+        newPaperSheets = Math.ceil(remainingQuantity / newPaperLayout.productsPerSheet);
+      }
+    }
+
+    const totalSheets = totalRemnantSheets + newPaperSheets;
+    const optimizedCost = newPaperSheets * paperSize.unitPrice;
+    const costSavings = pureNewPaperCost - optimizedCost;
+
+    const allProducts = [
+      ...remnantLayouts.flatMap(layout => layout.products),
+      ...newPaperLayout.products,
+    ];
+    
+    const totalUtilizedArea = 
+      remnantLayouts.reduce((sum, l) => sum + l.utilizedArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+      newPaperLayout.utilizedArea * newPaperSheets;
+    
+    const totalArea = 
+      remnantLayouts.reduce((sum, l) => sum + l.totalArea * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+      newPaperLayout.totalArea * newPaperSheets;
+    
+    const totalUtilizationRate = totalArea > 0 ? totalUtilizedArea / totalArea : 0;
+
+    const combinedLayout: CuttingLayout = {
+      ...newPaperLayout,
+      products: allProducts,
+      productsPerSheet: allProducts.filter(p => !p.isFromRemnant).length,
+    };
+
+    const orderAllocations = orders.map(order => {
+      const remnantProducts = remnantLayouts.reduce((sum, l) => 
+        sum + l.products.filter(p => p.orderId === order.id).length, 0);
+      const newPaperProducts = newPaperLayout.products.filter(p => p.orderId === order.id).length;
+      const perSheetTotal = remnantProducts + newPaperProducts;
+      
+      const sheetsForOrder = perSheetTotal > 0 
+        ? Math.ceil(order.quantity / perSheetTotal) 
+        : 0;
+      
+      return {
+        orderId: order.id,
+        orderNo: order.orderNo,
+        quantity: order.quantity,
+        sheets: sheetsForOrder,
+      };
+    });
+
+    const totalRemnantArea = 
+      remnantLayouts.reduce((sum, l) => sum + l.remnants.reduce((s, r) => s + r.area, 0) * (usedRemnantsInfo.find(r => r.remnantId === l.remnantId)?.quantity || 0), 0) +
+      newPaperLayout.remnants.reduce((sum, r) => sum + r.area, 0) * newPaperSheets;
+    
+    const recyclableArea = paperSize.width * paperSize.height * MIN_RECYCLABLE_AREA_RATIO;
+    const recyclableRemnants = [
+      ...remnantLayouts.flatMap(l => l.remnants.filter(r => r.area >= recyclableArea)),
+      ...newPaperLayout.remnants.filter(r => r.area >= recyclableArea),
+    ];
+
+    const scheme: CuttingScheme = {
+      id: generateId(),
+      name: `${paperSize.name} 方案${suitableRemnants.length > 0 ? ' (余料优先)' : ''}`,
+      paperSize,
+      layout: combinedLayout,
+      totalSheets,
+      totalCost: optimizedCost,
+      totalUtilizationRate,
+      wasteRate: 1 - totalUtilizationRate,
+      totalRemnantArea,
+      recyclableRemnants,
+      orderAllocations,
+      createdAt: new Date().toISOString(),
+      isRemnantOptimized: suitableRemnants.length > 0 && totalRemnantSheets > 0,
+      remnantUsageInfo: {
+        usedRemnants: usedRemnantsInfo,
+        totalRemnantSheets,
+        totalRemnantProducts,
+        totalNewPaperSheets: newPaperSheets,
+        totalNewPaperProducts: remainingQuantity > 0 ? remainingQuantity : 0,
+        costSavings,
+        pureNewPaperCost,
+        optimizedCost,
+      },
+      remnantLayouts,
+    };
+
+    allSchemes.push(scheme);
+
+    if (suitableRemnants.length > 0 && totalRemnantSheets > 0) {
+      const pureScheme: CuttingScheme = {
+        ...scheme,
+        id: generateId(),
+        name: `${paperSize.name} 方案 (纯新纸)`,
+        totalSheets: pureNewPaperSheets,
+        totalCost: pureNewPaperCost,
+        totalUtilizationRate: normalLayout.utilizationRate,
+        wasteRate: 1 - normalLayout.utilizationRate,
+        layout: normalLayout,
+        isRemnantOptimized: false,
+        remnantUsageInfo: undefined,
+        remnantLayouts: undefined,
+      };
+      allSchemes.push(pureScheme);
+    }
+  }
+
+  return allSchemes.sort((a, b) => {
+    const costA = a.totalCost;
+    const costB = b.totalCost;
+    if (costA !== costB) {
+      return costA - costB;
+    }
+    const scoreA = a.totalUtilizationRate * 0.6 + (1 / Math.max(a.totalCost, 1)) * 0.4;
+    const scoreB = b.totalUtilizationRate * 0.6 + (1 / Math.max(b.totalCost, 1)) * 0.4;
+    return scoreB - scoreA;
+  });
 }
 
 export { MIN_REMNANT_WIDTH, MIN_REMNANT_HEIGHT, MIN_RECYCLABLE_AREA_RATIO };
